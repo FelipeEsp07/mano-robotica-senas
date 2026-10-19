@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Calibracion guardada desde la app en la placa (es de cada mano; el codigo usa config.py)
+calibracion.json
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
