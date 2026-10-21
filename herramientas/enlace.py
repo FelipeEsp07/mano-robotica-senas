@@ -56,16 +56,35 @@ class EnlaceSerial:
         self._pendiente = b""
 
     def iniciar_servidor(self, timeout_s=20.0):
-        """Interrumpe lo que corra la placa y arranca servidor_serial. Lanza
-        RuntimeError si no responde "@LISTO" (con lo que dijo la placa)."""
+        """Interrumpe lo que corra la placa y arranca servidor_serial. Si no
+        responde, la reinicia por hardware (pulso de RTS) y reintenta una vez.
+        Lanza RuntimeError si aun asi no responde "@LISTO" (con lo que dijo)."""
+        visto = self._intentar_arrancar(timeout_s)
+        if "@LISTO" not in visto and self._reiniciar_placa():
+            visto = self._intentar_arrancar(timeout_s)
+        if "@LISTO" not in visto:
+            raise RuntimeError("La placa no arranco el servidor. Respondio: {!r}".format(visto[-300:]))
+        self._pendiente = b""
+
+    def _intentar_arrancar(self, timeout_s):
         self._serie.write(b"\r\x03\x03\x02")  # interrumpir, y salir de REPL crudo si estaba
         time.sleep(0.4)
         self._serie.reset_input_buffer()
         self._serie.write(b"import servidor_serial; servidor_serial.iniciar()\r\n")
-        visto = self._leer_hasta(lambda texto: "@LISTO" in texto, timeout_s)
-        if "@LISTO" not in visto:
-            raise RuntimeError("La placa no arranco el servidor. Respondio: {!r}".format(visto[-300:]))
-        self._pendiente = b""
+        return self._leer_hasta(lambda texto: "@LISTO" in texto, timeout_s)
+
+    def _reiniciar_placa(self):
+        """Pulso de RTS (EN de la ESP32 en el chip CH343). False si el puerto
+        no tiene esas lineas (p. ej. en las pruebas)."""
+        if not hasattr(self._serie, "rts"):
+            return False
+        self._serie.dtr = False
+        self._serie.rts = True
+        time.sleep(0.15)
+        self._serie.rts = False
+        time.sleep(3.0)  # arranque de MicroPython
+        self._serie.reset_input_buffer()
+        return True
 
     def enviar(self, linea, timeout_s=4.0):
         self._serie.reset_input_buffer()

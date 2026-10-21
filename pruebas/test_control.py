@@ -211,6 +211,106 @@ class PruebasControl(unittest.TestCase):
         self.assertTrue(control.ejecutar("__class__").startswith("ERR"))
 
 
+class PruebasEtapas(unittest.TestCase):
+    """Cerrar = dedos primero y pulgar despues; abrir = pulgar primero."""
+
+    DEDOS = ("indice", "medio", "anular", "menique")
+    PULGAR = ("pulgar_flexion", "pulgar_oposicion")
+
+    def correr(self, linea):
+        """Ejecuta `linea` sin esperar y avanza el reloj; devuelve, por eje, el
+        instante (ms) en que recibio senal por primera vez y en que llego."""
+        mano, control, pwms, reloj = crear()
+        t0 = reloj()
+        control.ejecutar(linea)
+        primera, llegada = {}, {}
+        while True:
+            seguir = mano.actualizar()
+            for eje, pwm in pwms.items():
+                if eje not in primera and pwm.llamadas:
+                    primera[eje] = reloj() - t0
+                if eje not in llegada and mano._pos[eje] is not None and mano._objetivo[eje] is None:
+                    llegada[eje] = reloj() - t0
+            if not seguir:
+                break
+            reloj.dormir(config.PERIODO_MS)
+        return mano, primera, llegada
+
+    def test_cerrar_mueve_los_dedos_y_despues_el_pulgar(self):
+        mano, primera, llegada = self.correr("CERRAR")
+        ultimo_dedo = max(llegada[d] for d in self.DEDOS)
+        for eje in self.PULGAR:
+            self.assertGreater(primera[eje], ultimo_dedo, eje)  # el pulgar no arranca antes de que lleguen los 4
+        self.assertEqual(set(mano.estado().values()), {1.0})
+
+    def test_hay_una_pausa_entre_los_dedos_y_el_pulgar(self):
+        _, primera, llegada = self.correr("CERRAR")
+        espera = min(primera[e] for e in self.PULGAR) - max(llegada[d] for d in self.DEDOS)
+        self.assertGreaterEqual(espera, config.PAUSA_ENTRE_ETAPAS_MS - config.PERIODO_MS)
+
+    def test_abrir_mueve_primero_el_pulgar(self):
+        mano, control, pwms, reloj = crear()
+        control.ejecutar("CERRAR", esperar=True)
+        antes = {d: len(pwms[d].llamadas) for d in self.DEDOS}
+        control.ejecutar("ABRIR")
+        # mientras el pulgar se abre, los dedos no reciben ordenes nuevas
+        while mano.estado()["pulgar_flexion"] != 0.0 or mano.estado()["pulgar_oposicion"] != 0.0:
+            mano.actualizar()
+            reloj.dormir(config.PERIODO_MS)
+            for d in self.DEDOS:
+                self.assertEqual(len(pwms[d].llamadas), antes[d], d)
+        mano.esperar()
+        self.assertEqual(set(mano.estado().values()), {0.0})
+
+    def test_las_poses_tambien_dejan_el_pulgar_para_el_final(self):
+        from poses import POSES
+        for nombre in POSES:
+            mano, primera, llegada = self.correr("POSE " + nombre)
+            ultimo_dedo = max(llegada[d] for d in self.DEDOS)
+            for eje in self.PULGAR:
+                self.assertGreaterEqual(primera[eje], ultimo_dedo, (nombre, eje))
+            self.assertEqual(mano.estado(), POSES[nombre], nombre)
+
+    def test_sin_pulgar_conectado_cierra_solo_los_dedos(self):
+        mano, control, _, _ = crear(["indice", "medio", "anular", "menique"])
+        control.ejecutar("CERRAR", esperar=True)
+        self.assertEqual(set(mano.estado().values()), {1.0})
+
+    def test_con_esperar_se_completan_las_dos_etapas(self):
+        mano, control, _, _ = crear()
+        control.ejecutar("CERRAR", esperar=True)
+        self.assertFalse(mano.moviendo())
+        self.assertEqual(set(mano.estado().values()), {1.0})
+
+    def test_detener_cancela_las_etapas_pendientes(self):
+        mano, control, pwms, reloj = crear()
+        control.ejecutar("CERRAR")
+        mano.actualizar()
+        control.ejecutar("DETENER")
+        self.assertFalse(mano.moviendo())
+        for _ in range(100):
+            reloj.dormir(config.PERIODO_MS)
+            mano.actualizar()
+        for eje in self.PULGAR:
+            self.assertEqual(pwms[eje].llamadas, [], eje)  # el pulgar nunca llego a recibir senal
+
+    def test_una_orden_directa_cancela_las_etapas_pendientes(self):
+        mano, control, pwms, reloj = crear()
+        control.ejecutar("CERRAR")
+        control.ejecutar("DEDO indice 0")
+        while mano.actualizar():
+            reloj.dormir(config.PERIODO_MS)
+        self.assertEqual(mano.estado()["indice"], 0.0)
+        for eje in self.PULGAR:
+            self.assertEqual(pwms[eje].llamadas, [], eje)
+
+    def test_valores_invalidos_no_mueven_nada(self):
+        mano, _, pwms, _ = crear()
+        with self.assertRaises(ValueError):
+            mano.mover_por_etapas([{"indice": 1.0}, {"pulgar_flexion": 3.0}])
+        self.assertTrue(all(p.llamadas == [] for p in pwms.values()))
+
+
 class PruebasServidor(unittest.TestCase):
     def test_responde_una_linea_con_arroba_por_comando(self):
         _, control, _, _ = crear()
@@ -319,7 +419,8 @@ class PruebasEnlaces(unittest.TestCase):
         self.assertGreater(enlace.ultima_duracion_s, 0.5)
         enlace.enviar("VEL 3000 3000")
         enlace.enviar("POSE punio")
-        self.assertEqual(enlace.ultima_duracion_s, 0.0)  # ya estaba ahi
+        # ya estaba ahi: solo cuentan la pausa entre etapas y el arranque escalonado
+        self.assertLess(enlace.ultima_duracion_s, 1.0)
         ok, estado = parsear(enlace.enviar("ESTADO"))
         self.assertEqual(estado["valores"], POSES["punio"])
 
@@ -329,6 +430,50 @@ class PruebasEnlaces(unittest.TestCase):
         antes = os.path.exists("calibracion.json")
         self.assertEqual(enlace.enviar("GUARDAR"), "OK")
         self.assertEqual(os.path.exists("calibracion.json"), antes)
+
+
+class SerieMudaHastaReinicio(SerieFalsa):
+    """Placa que no contesta nada hasta que le dan un pulso de RTS (como la
+    ESP32 cuando arranca en silencio)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dtr = False
+        self.reinicios = 0
+        self._despierta = False
+        self._rts = False
+
+    @property
+    def rts(self):
+        return self._rts
+
+    @rts.setter
+    def rts(self, valor):
+        if valor:
+            self.reinicios += 1
+            self._despierta = True
+        self._rts = valor
+
+    def write(self, datos):
+        if self._despierta:
+            super().write(datos)
+        else:
+            self.escrito += datos
+
+
+class PruebasReinicioAutomatico(unittest.TestCase):
+    def test_reinicia_la_placa_si_no_arranca_y_reintenta(self):
+        from unittest import mock
+        enlace = EnlaceSerial("COM-FALSO", abrir_serie=SerieMudaHastaReinicio)
+        with mock.patch("enlace.time.sleep"):
+            enlace.iniciar_servidor(timeout_s=0.3)
+        self.assertEqual(enlace._serie.reinicios, 1)
+        self.assertEqual(enlace.enviar("PING"), "OK")
+
+    def test_no_reinicia_si_el_servidor_arranca_a_la_primera(self):
+        enlace = EnlaceSerial("COM-FALSO", abrir_serie=SerieFalsa)
+        enlace.iniciar_servidor(timeout_s=2)  # SerieFalsa no tiene rts: ni se intenta reiniciar
+        self.assertEqual(enlace.enviar("PING"), "OK")
 
 
 class PruebasUnidades(unittest.TestCase):

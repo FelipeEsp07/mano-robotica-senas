@@ -43,12 +43,12 @@ PULSO_MAX_US = 2700
 # MAYOR que "cerrado": no se cambia nada mas. Los valores calibrados se
 # guardan en calibracion.json en la placa y tienen prioridad sobre estos.
 CALIBRACION_DEFECTO = {
-    "indice": (800, 2600),
+    "indice": (600, 2600),
     "medio": (400, 2600),
     "anular": (400, 2600),
-    "menique": (2600, 400),
-    "pulgar_flexion": (2600, 400),
-    "pulgar_oposicion": (2600, 400),
+    "menique": (2600, 300),
+    "pulgar_flexion": (800, 2700),
+    "pulgar_oposicion": (800, 1800),
 }
 DIFERENCIA_MIN_US = 100  # recorrido minimo entre "abierto" y "cerrado" (evita una calibracion degenerada)
 RUTA_CALIBRACION = "calibracion.json"
@@ -70,3 +70,11 @@ RETARDO_ESCALON_MS = 60   # al abrir/cerrar toda la mano, cada servo arranca est
 # --- Ejes con servo conectado (los que mueve el servidor serial y las poses) ---
 # Los demas quedan aislados a 0 V. Cambiar cuando se conecten o retiren servos.
 EJES_ACTIVOS = EJES
+
+# --- Orden al cerrar/abrir la mano y en las poses ---
+# Primero se mueven los dedos y, cuando TODOS llegaron (mas una pausa corta), el
+# pulgar. Al abrir la mano se hace al reves (pulgar primero) para que no se
+# enganche con los dedos al soltarse.
+GRUPO_DEDOS = ("indice", "medio", "anular", "menique")
+GRUPO_PULGAR = ("pulgar_flexion", "pulgar_oposicion")
+PAUSA_ENTRE_ETAPAS_MS = 300

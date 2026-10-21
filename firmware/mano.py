@@ -49,6 +49,8 @@ class Mano:
         self._ultimo_ms = None                          # instante del ultimo avance; None = nada en curso
         self._vel_global = (config.VELOCIDAD_CIERRE_US_S, config.VELOCIDAD_APERTURA_US_S)
         self._vel_eje = {}                              # {eje: (cierre_us_s, apertura_us_s)} solo los que difieren
+        self._etapas = []                               # etapas pendientes de mover_por_etapas (lista de {eje: valor})
+        self._espera_etapa_ms = 0                       # pausa que falta antes de lanzar la siguiente etapa
 
     def ejes(self):
         """Ejes presentes, en el orden de config.EJES."""
@@ -82,16 +84,37 @@ class Mano:
         for eje, valor in valores.items():
             self._revisar_eje(eje)
             self._revisar_valor(valor)
+        self._etapas = []  # una orden directa cancela las etapas que quedaran pendientes
+        self._lanzar(valores, escalonado)
+        if esperar:
+            self.esperar()
 
+    def _lanzar(self, valores, escalonado):
+        """Pone en marcha los ejes de `valores` (ya validados)."""
         for indice, eje in enumerate(e for e in config.EJES if e in valores):
             if self._pos[eje] is None:
                 # primer movimiento: la senal arranca en la pose segura ("abierto")
                 self._pos[eje] = float(self._servos[eje].mover_a_us(self._calibracion[eje][0]))
             self._objetivo[eje] = self._pulso_de_valor(eje, valores[eje])
             self._espera_ms[eje] = indice * config.RETARDO_ESCALON_MS if escalonado else 0
-
         if self._ultimo_ms is None:
             self._ultimo_ms = self._reloj_ms()
+
+    def mover_por_etapas(self, etapas, esperar=True, escalonado=True):
+        """Mueve por tandas: `etapas` es una lista de {eje: valor}. La primera
+        arranca ya; cada una de las siguientes arranca cuando la anterior
+        TERMINO de llegar (mas config.PAUSA_ENTRE_ETAPAS_MS). Se valida todo
+        antes de mover nada. Ej.: cerrar el punio = dedos primero, pulgar despues."""
+        etapas = [dict(etapa) for etapa in etapas if etapa]
+        for etapa in etapas:
+            for eje, valor in etapa.items():
+                self._revisar_eje(eje)
+                self._revisar_valor(valor)
+        if not etapas:
+            return
+        self._etapas = etapas[1:]
+        self._espera_etapa_ms = config.PAUSA_ENTRE_ETAPAS_MS
+        self._lanzar(etapas[0], escalonado)
         if esperar:
             self.esperar()
 
@@ -109,12 +132,15 @@ class Mano:
         """Congela todos los ejes donde estan (siguen sosteniendo la posicion)."""
         for eje in self._objetivo:
             self._objetivo[eje] = None
+        self._etapas = []
         self._ultimo_ms = None
 
     def soltar(self, eje=None):
         """Corta la senal de un eje (o de todos): el servo deja de sostener.
         El siguiente movimiento vuelve a arrancar desde "abierto"."""
         ejes = self.ejes() if eje is None else (eje,)
+        if eje is None:
+            self._etapas = []
         for nombre in ejes:
             self._revisar_eje(nombre)
             self._servos[nombre].soltar()
@@ -131,7 +157,9 @@ class Mano:
         tiempo transcurrido. Devuelve True mientras quede algo por mover.
         Llamar cada config.PERIODO_MS (esperar() lo hace)."""
         if self._ultimo_ms is None:
-            return False
+            if not self._etapas:
+                return False
+            self._ultimo_ms = self._reloj_ms()  # solo quedan etapas por lanzar
         ahora = self._reloj_ms()
         dt = min((ahora - self._ultimo_ms) & MASCARA_TICKS, config.MAX_PASO_MS)
         self._ultimo_ms = ahora
@@ -159,7 +187,14 @@ class Mano:
             self._pos[eje] = pos
             self._servos[eje].mover_a_us(pos)
 
-        if not pendiente:
+        if not pendiente and self._etapas:
+            # la etapa en curso termino: tras la pausa se lanza la siguiente
+            self._espera_etapa_ms -= dt
+            if self._espera_etapa_ms <= 0:
+                self._lanzar(self._etapas.pop(0), True)
+                self._espera_etapa_ms = config.PAUSA_ENTRE_ETAPAS_MS
+            pendiente = True
+        elif not pendiente:
             self._ultimo_ms = None
         return pendiente
 
@@ -217,7 +252,7 @@ class Mano:
 
     def moviendo(self):
         """True si algun eje todavia va hacia su objetivo."""
-        return any(objetivo is not None for objetivo in self._objetivo.values())
+        return bool(self._etapas) or any(objetivo is not None for objetivo in self._objetivo.values())
 
     def estado(self):
         """{eje: valor 0.0..1.0 actual, o None si el eje aun no tiene senal}."""

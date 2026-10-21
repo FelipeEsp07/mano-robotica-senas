@@ -7,8 +7,9 @@ respuesta es una sola linea:  "OK"  /  "OK {json}"  /  "ERR mensaje".
 Comandos (no distinguen mayusculas; los numeros van con punto decimal):
   PING                              comprueba que responde
   ESTADO                            posicion, pulsos, calibracion y velocidades (json)
-  POSE <nombre>                     punio, ok, rock (ver poses.py)
-  ABRIR | CERRAR                    toda la mano (arranque escalonado)
+  POSE <nombre>                     punio, ok, rock (ver poses.py); dedos primero, pulgar despues
+  CERRAR                            la mano: dedos primero y, al llegar, el pulgar
+  ABRIR                             la mano: pulgar primero y, al llegar, los dedos
   DEDO <eje> <valor>                un eje a 0.0 (abierto) .. 1.0 (cerrado)
   MOVER <eje>=<valor> ...           varios ejes a la vez
   VEL <cierre> <apertura> [<eje>]   velocidad en us/s; sin eje = todos los dedos
@@ -85,13 +86,24 @@ class Control:
         if nombre not in self._poses:
             raise ValueError("pose desconocida: {} (poses: {})".format(nombre, ", ".join(sorted(self._poses))))
         presentes = self._mano.ejes()
-        self._mano.mover({eje: v for eje, v in self._poses[nombre].items() if eje in presentes}, esperar=False)
+        pose = {eje: v for eje, v in self._poses[nombre].items() if eje in presentes}
+        self._mano.mover_por_etapas(self._en_etapas(pose, pulgar_primero=False), esperar=False)
 
     def _cmd_abrir(self, args, esperar):
-        self._mano.abrir(esperar=False)
+        todos = {eje: 0.0 for eje in self._mano.ejes()}
+        self._mano.mover_por_etapas(self._en_etapas(todos, pulgar_primero=True), esperar=False)
 
     def _cmd_cerrar(self, args, esperar):
-        self._mano.cerrar(esperar=False)
+        todos = {eje: 1.0 for eje in self._mano.ejes()}
+        self._mano.mover_por_etapas(self._en_etapas(todos, pulgar_primero=False), esperar=False)
+
+    @staticmethod
+    def _en_etapas(valores, pulgar_primero):
+        """Reparte `valores` en dos etapas: los dedos y el pulgar (ver config.GRUPO_*).
+        Un eje que no este en el grupo del pulgar va con los dedos."""
+        pulgar = {e: v for e, v in valores.items() if e in config.GRUPO_PULGAR}
+        dedos = {e: v for e, v in valores.items() if e not in config.GRUPO_PULGAR}
+        return [pulgar, dedos] if pulgar_primero else [dedos, pulgar]
 
     def _cmd_dedo(self, args, esperar):
         if len(args) != 2:

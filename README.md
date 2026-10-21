@@ -308,8 +308,9 @@ La misma puerta para todo (`firmware/control.py`). Cada comando es una línea de
 | Comando | Qué hace |
 |---|---|
 | `PING` / `ESTADO` | Comprueba la conexión / devuelve posición, pulsos, calibración, velocidades y poses (json) |
-| `POSE punio\|ok\|rock` | Lleva la mano a la pose |
-| `ABRIR` / `CERRAR` | Toda la mano |
+| `POSE punio\|ok\|rock` | Lleva la mano a la pose: **primero los 4 dedos y, cuando llegan, el pulgar** |
+| `CERRAR` | Cierra la mano: **primero índice, medio, anular y meñique; cuando los 4 llegan (y tras una pausa de 0,3 s), el pulgar** |
+| `ABRIR` | Abre la mano en orden inverso: **primero el pulgar y luego los 4 dedos** (así el pulgar no se engancha con los dedos) |
 | `DEDO <eje> <0.0-1.0>` | Un dedo (0 abierto, 1 cerrado) |
 | `MOVER <eje>=<v> ...` | Varios dedos a la vez |
 | `VEL <cierre> <apertura> [<eje>]` | Velocidad en µs/s; sin eje, todos |
@@ -326,6 +327,8 @@ c.ejecutar("POSE ok", esperar=True)
 c.ejecutar("DEDO medio 0.5", esperar=True)
 ```
 
+El orden dedos → pulgar es **por eventos** (el pulgar arranca cuando los dedos terminaron de llegar, no por un tiempo fijo) y se configura en `firmware/config.py`: `GRUPO_DEDOS`, `GRUPO_PULGAR` y `PAUSA_ENTRE_ETAPAS_MS` (0,3 s por defecto). Un `DEDO` o `MOVER` directo cancela las etapas pendientes.
+
 Las poses están en `firmware/poses.py` con valores a ojo (hay que afinarlas con la mano armada). Los dedos que no estén en `config.EJES_ACTIVOS` (o en la lista dada a `crear_mano`) se ignoran en las poses.
 
 ### 11.4 Pruebas en la PC (sin placa)
@@ -334,7 +337,7 @@ Las poses están en `firmware/poses.py` con valores a ojo (hay que afinarlas con
 python -m unittest discover -s pruebas -v
 ```
 
-73 pruebas: movimiento y calibración, poses, comandos, servidor, enlace serial con un puerto falso y la app de Streamlit completa en modo simulado.
+84 pruebas: movimiento y calibración, poses, orden por etapas, comandos, servidor, enlace serial (con un puerto falso y con reinicio automático) y la app de Streamlit completa en modo simulado.
 
 ---
 
@@ -355,12 +358,12 @@ Datos tomados en la placa, con el montaje y el hilo reales. Se actualizan a medi
 
 | Dedo | GPIO | Abierto (µs) | Cerrado (µs) | Sentido | Estado |
 |---|---|---|---|---|---|
-| `indice` | 8 | 800 | 2600 | normal | **calibrado** (2026-10-19) |
+| `indice` | 8 | 600 | 2600 | normal | **calibrado** (2026-10-19) |
 | `medio` | 9 | 400 | 2600 | normal | **calibrado** (2026-10-19) |
 | `anular` | 10 | 400 | 2600 | normal | **calibrado** (2026-10-19) |
-| `menique` | 11 | 2600 | 400 | **invertido** (cierra al bajar el pulso) | **calibrado** (2026-10-19) |
-| `pulgar_flexion` | 12 | 2600 | 400 | invertido | pulsos máximos puestos; **pendiente por un problema físico** del pulgar |
-| `pulgar_oposicion` | 13 | 2600 | 400 | invertido | pulsos máximos puestos; **pendiente por un problema físico** del pulgar |
+| `menique` | 11 | 2600 | 300 | **invertido** (cierra al bajar el pulso) | **calibrado** (2026-10-19) |
+| `pulgar_flexion` | 12 | 800 | 2700 | normal | cerrado en el máximo del firmware (2700) para que flexione lo más posible (2026-10-20); vigilar calentamiento; pendiente por un problema físico del pulgar |
+| `pulgar_oposicion` | 13 | 800 | 1800 | normal | recorrido reducido a 800–1800 (2026-10-20); pendiente por un problema físico del pulgar |
 
 Notas de la calibración:
 - Cada servo puede quedar montado en un sentido distinto. No se cambia el cableado: en la calibración el "abierto" simplemente queda mayor que el "cerrado" (caso del meñique y del pulgar).
@@ -371,15 +374,16 @@ Notas de la calibración:
 
 ---
 
-## 13. Estado del desarrollo (última actualización: 2026-10-19)
+## 13. Estado del desarrollo (última actualización: 2026-10-21)
 
 - [x] README y estructura
 - [x] Pruebas de servos sueltos y con hilo
 - [x] Firmware base (`config`, `calibracion`, `servo`, `mano`, `boot`), subido y probado en la placa
 - [x] Poses (`punio`, `ok`, `rock`) y `control.py` (única puerta de comandos)
-- [x] Servidor serial, verificado con la placa real
+- [x] Servidor serial, verificado con la placa real (si la placa no responde al conectar, la app la reinicia sola y reintenta)
+- [x] Cerrar la mano y las poses por etapas: primero los 4 dedos y al llegar el pulgar; abrir al revés (probado en la placa real)
 - [x] App de Streamlit (poses, un dedo, velocidad, ángulos, registro): probada en modo simulado y su comunicación con la placa verificada
-- [x] 73 pruebas automáticas en la PC (movimiento, calibración, poses, comandos, servidor, enlace y app)
+- [x] 84 pruebas automáticas en la PC (movimiento, calibración, poses, orden por etapas, comandos, servidor, enlace y app)
 - [x] **Cuatro dedos calibrados**: índice, medio, anular y meñique
 - [ ] Pulgar (flexión y oposición): pendiente por un problema físico
 - [ ] Afinar las poses (`ok`, `rock`) con la mano completa armada
